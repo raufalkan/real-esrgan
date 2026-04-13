@@ -8,7 +8,7 @@ from basicsr.archs.srvgg_arch import SRVGGNetCompact
 from realesrgan.utils import RealESRGANer
 from cog import BasePredictor, Input, Path
 
-WEIGHTS = "/src/weights"
+WEIGHTS = "/src/weights"  # model ağırlıklarının yolu
 
 
 class Predictor(BasePredictor):
