@@ -25,7 +25,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Login to Replicate
-        run: cog login --token ${{ secrets.REPLICATE_API_TOKEN }}
+        run: echo ${{ secrets.REPLICATE_API_TOKEN }} | cog login --token-stdin
 
       - name: Push to Replicate
         run: cog push r8.im/${{ secrets.REPLICATE_USERNAME }}/real-esrgan
