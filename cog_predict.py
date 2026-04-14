@@ -32,44 +32,98 @@ class Predictor(BasePredictor):
             scale=4,
             model_path=f"{WEIGHTS}/realesr-animevideov3.pth",
             model=model,
-            tile=0,        # H100 80GB — tile gerekmez
+            tile=0,
             tile_pad=0,
             pre_pad=0,
             half=self.half,
         )
         print(f"[setup] Model yüklendi: {time.time()-t0:.1f}s")
 
-    def sharpen(self, img, strength=0.3):
-        """Upscale sonrası hafif unsharp mask — blur onarımı."""
+    def analyze_video(self, video_path):
+        """Videoyu analiz et, en iyi parametreleri otomatik belirle."""
+        cap = cv2.VideoCapture(video_path)
+        width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps    = cap.get(cv2.CAP_PROP_FPS) or 24
+        total  = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+        # Ortadan 5 kare al, analiz için
+        blur_scores = []
+        noise_scores = []
+        sample_positions = [int(total * p) for p in [0.2, 0.35, 0.5, 0.65, 0.8]]
+
+        for pos in sample_positions:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, pos)
+            ret, frame = cap.read()
+            if not ret:
+                continue
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+            # Blur skoru — düşük = bulanık
+            blur_scores.append(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+            # Noise skoru — yüksek = gürültülü
+            noise = cv2.meanStdDev(gray - cv2.GaussianBlur(gray, (5,5), 0))[1][0][0]
+            noise_scores.append(noise)
+
+        cap.release()
+
+        avg_blur  = np.mean(blur_scores) if blur_scores else 100
+        avg_noise = np.mean(noise_scores) if noise_scores else 5
+
+        # Scale belirle
+        if width <= 480:
+            scale = 4
+        elif width <= 720:
+            scale = 4
+        elif width <= 1080:
+            scale = 2
+        else:
+            scale = 1
+
+        # Sharpen belirle
+        if avg_blur < 50:
+            sharpen = 0.6    # Çok bulanık
+        elif avg_blur < 150:
+            sharpen = 0.35   # Orta bulanık
+        else:
+            sharpen = 0.15   # Zaten net
+
+        # Denoise belirle
+        denoise = avg_noise > 8.0
+
+        print(f"[analyze] {width}x{height}, {total} kare, {fps:.1f}fps")
+        print(f"[analyze] Blur skoru: {avg_blur:.1f} | Noise skoru: {avg_noise:.2f}")
+        print(f"[analyze] Karar → scale={scale}, sharpen={sharpen}, denoise={denoise}")
+
+        return scale, sharpen, denoise, fps, total
+
+    def sharpen_frame(self, img, strength):
         blurred = cv2.GaussianBlur(img, (0, 0), sigmaX=2.0)
         return cv2.addWeighted(img, 1 + strength, blurred, -strength, 0)
 
     def predict(
         self,
         video: Path = Input(description="Upscale edilecek video (MP4, MOV, AVI)"),
-        scale: float = Input(description="Ölçek (1-4)", default=4, ge=1, le=4),
-        sharpen_strength: float = Input(
-            description="Blur onarım gücü (0=kapalı, 0.3=hafif, 0.6=güçlü)",
-            default=0.3, ge=0.0, le=1.0
-        ),
-        denoise: bool = Input(
-            description="Gürültü temizleme (eski/gürültülü videolar için)",
-            default=False
-        ),
     ) -> Path:
 
-        workdir = tempfile.mkdtemp()
+        video_path = str(video)
+        workdir    = tempfile.mkdtemp()
         frames_in  = os.path.join(workdir, "frames_in")
         frames_out = os.path.join(workdir, "frames_out")
         os.makedirs(frames_in, exist_ok=True)
         os.makedirs(frames_out, exist_ok=True)
-
-        video_path = str(video)
         out_path   = os.path.join(workdir, "output.mp4")
 
-        # 1. Ses ayır
+        # 1. Video analiz et — parametreleri otomatik belirle
+        scale, sharpen, denoise, fps, total = self.analyze_video(video_path)
+
+        # scale değişebileceği için upsampler'ı güncelle
+        self.upsampler.scale = scale
+
+        # 2. Ses ayır
         audio_path = os.path.join(workdir, "audio.aac")
-        has_audio = False
+        has_audio  = False
         probe = subprocess.run(
             ["ffprobe", "-v", "error", "-select_streams", "a",
              "-show_entries", "stream=codec_type", "-of", "csv=p=0", video_path],
@@ -82,14 +136,7 @@ class Predictor(BasePredictor):
             ], check=True)
             has_audio = True
 
-        # 2. FPS al
-        cap = cv2.VideoCapture(video_path)
-        fps = cap.get(cv2.CAP_PROP_FPS) or 24
-        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        cap.release()
-        print(f"[predict] {total} kare, {fps:.2f} FPS")
-
-        # 3. Kareleri çıkar — maksimum kalite PNG
+        # 3. Kareleri çıkar
         subprocess.run([
             "ffmpeg", "-y", "-i", video_path,
             "-qscale:v", "1", "-qmin", "1",
@@ -110,7 +157,7 @@ class Predictor(BasePredictor):
             if img is None:
                 continue
 
-            # Opsiyonel: upscale öncesi denoise
+            # Denoise (gerekirse)
             if denoise:
                 img = cv2.fastNlMeansDenoisingColored(img, None, 3, 3, 7, 21)
 
@@ -118,32 +165,32 @@ class Predictor(BasePredictor):
             try:
                 output, _ = self.upsampler.enhance(img, outscale=scale)
             except RuntimeError as e:
-                print(f"CUDA hatası kare {fname}: {e}")
+                print(f"CUDA hatası: {e}")
                 raise
 
-            # Blur onarımı — unsharp mask
-            if sharpen_strength > 0:
-                output = self.sharpen(output, strength=sharpen_strength)
+            # Sharpen
+            if sharpen > 0:
+                output = self.sharpen_frame(output, strength=sharpen)
 
             cv2.imwrite(os.path.join(frames_out, fname), output)
 
-        print(f"[predict] İşleme tamamlandı: {time.time()-t_start:.1f}s")
+        print(f"[predict] İşleme: {time.time()-t_start:.1f}s")
 
-        # 5. Kareleri videoya birleştir — H264 en yüksek kalite
+        # 5. Video birleştir
         video_noaudio = os.path.join(workdir, "video_noaudio.mp4")
         subprocess.run([
             "ffmpeg", "-y",
             "-r", str(fps),
             "-i", f"{frames_out}/%08d.png",
             "-c:v", "libx264",
-            "-crf", "16",          # 0=lossless, daha düşük=daha kaliteli
-            "-preset", "fast",     # slow yerine fast — H100'de encoding bottleneck değil
+            "-crf", "16",
+            "-preset", "fast",
             "-pix_fmt", "yuv420p",
             "-movflags", "+faststart",
             video_noaudio
         ], check=True)
 
-        # 6. Sesi geri ekle
+        # 6. Ses ekle
         if has_audio:
             subprocess.run([
                 "ffmpeg", "-y",
