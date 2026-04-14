@@ -1,14 +1,19 @@
 import os
+import sys
 import time
 import tempfile
 import subprocess
 import cv2
 import torch
+
+# realesrgan klasörü /src altında, direkt import et
+sys.path.insert(0, "/src")
+
 from basicsr.archs.srvgg_arch import SRVGGNetCompact
 from realesrgan.utils import RealESRGANer
 from cog import BasePredictor, Input, Path
 
-WEIGHTS = "/src/weights"  # model ağırlıklarının yolu
+WEIGHTS = "/src/weights"
 
 
 class Predictor(BasePredictor):
@@ -18,7 +23,6 @@ class Predictor(BasePredictor):
         self.half = torch.cuda.is_available()
         print("[setup] GPU:", torch.cuda.get_device_name(0) if self.half else "CPU")
 
-        # En iyi kalite video modeli: realesr-animevideov3
         model = SRVGGNetCompact(
             num_in_ch=3, num_out_ch=3,
             num_feat=64, num_conv=16,
@@ -53,7 +57,7 @@ class Predictor(BasePredictor):
         video_path = str(video)
         out_path   = os.path.join(workdir, "output.mp4")
 
-        # --- 1. Ses varsa ayır ---
+        # 1. Ses ayır
         audio_path = os.path.join(workdir, "audio.aac")
         has_audio = False
         probe = subprocess.run(
@@ -68,21 +72,21 @@ class Predictor(BasePredictor):
             ], check=True)
             has_audio = True
 
-        # --- 2. FPS al ---
+        # 2. FPS al
         cap = cv2.VideoCapture(video_path)
         fps = cap.get(cv2.CAP_PROP_FPS) or 24
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         cap.release()
         print(f"[predict] {total} kare, {fps:.2f} FPS")
 
-        # --- 3. Kareleri çıkar ---
+        # 3. Kareleri çıkar
         subprocess.run([
             "ffmpeg", "-y", "-i", video_path,
             "-qscale:v", "1", "-qmin", "1",
             f"{frames_in}/%08d.png"
         ], check=True)
 
-        # --- 4. Her kareyi upscale et ---
+        # 4. Her kareyi upscale et
         frame_files = sorted(os.listdir(frames_in))
         for i, fname in enumerate(frame_files):
             if i % 50 == 0:
@@ -98,20 +102,20 @@ class Predictor(BasePredictor):
                 output, _ = self.upsampler.enhance(img, outscale=scale)
             cv2.imwrite(os.path.join(frames_out, fname), output)
 
-        # --- 5. Kareleri videoya birleştir ---
+        # 5. Kareleri videoya birleştir
         video_noaudio = os.path.join(workdir, "video_noaudio.mp4")
         subprocess.run([
             "ffmpeg", "-y",
             "-r", str(fps),
             "-i", f"{frames_out}/%08d.png",
             "-c:v", "libx264",
-            "-crf", "17",          # en iyi kalite (0=lossless, 51=en kötü)
-            "-preset", "slow",     # en iyi sıkıştırma
+            "-crf", "17",
+            "-preset", "slow",
             "-pix_fmt", "yuv420p",
             video_noaudio
         ], check=True)
 
-        # --- 6. Sesi geri ekle ---
+        # 6. Sesi geri ekle
         if has_audio:
             subprocess.run([
                 "ffmpeg", "-y",
