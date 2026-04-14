@@ -25,6 +25,6 @@ build:
 
   run:
     - "mkdir -p /src/weights"
-    - "curl -L https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-animevideov3.pth -o /src/weights/realesr-animevideov3.pth"
+    - "curl -L https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth -o /src/weights/RealESRGAN_x4plus.pth"
 
 predict: "cog_predict.py:Predictor"
