@@ -6,7 +6,6 @@ import subprocess
 import cv2
 import torch
 
-# realesrgan klasörü /src altında, direkt import et
 sys.path.insert(0, "/src")
 
 from basicsr.archs.srvgg_arch import SRVGGNetCompact
@@ -57,7 +56,6 @@ class Predictor(BasePredictor):
         video_path = str(video)
         out_path   = os.path.join(workdir, "output.mp4")
 
-        # 1. Ses ayır
         audio_path = os.path.join(workdir, "audio.aac")
         has_audio = False
         probe = subprocess.run(
@@ -72,21 +70,18 @@ class Predictor(BasePredictor):
             ], check=True)
             has_audio = True
 
-        # 2. FPS al
         cap = cv2.VideoCapture(video_path)
         fps = cap.get(cv2.CAP_PROP_FPS) or 24
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         cap.release()
         print(f"[predict] {total} kare, {fps:.2f} FPS")
 
-        # 3. Kareleri çıkar
         subprocess.run([
             "ffmpeg", "-y", "-i", video_path,
             "-qscale:v", "1", "-qmin", "1",
             f"{frames_in}/%08d.png"
         ], check=True)
 
-        # 4. Her kareyi upscale et
         frame_files = sorted(os.listdir(frames_in))
         for i, fname in enumerate(frame_files):
             if i % 50 == 0:
@@ -97,12 +92,11 @@ class Predictor(BasePredictor):
             try:
                 output, _ = self.upsampler.enhance(img, outscale=scale)
             except RuntimeError as e:
-                print(f"CUDA hatası kare {fname}: {e} — tile küçültülüyor")
+                print(f"CUDA hatası: {e} — tile küçültülüyor")
                 self.upsampler.tile_size = max(128, self.upsampler.tile_size // 2)
                 output, _ = self.upsampler.enhance(img, outscale=scale)
             cv2.imwrite(os.path.join(frames_out, fname), output)
 
-        # 5. Kareleri videoya birleştir
         video_noaudio = os.path.join(workdir, "video_noaudio.mp4")
         subprocess.run([
             "ffmpeg", "-y",
@@ -115,7 +109,6 @@ class Predictor(BasePredictor):
             video_noaudio
         ], check=True)
 
-        # 6. Sesi geri ekle
         if has_audio:
             subprocess.run([
                 "ffmpeg", "-y",
